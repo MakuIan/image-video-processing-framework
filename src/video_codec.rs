@@ -18,14 +18,9 @@
 //!    Keyframe erneut enkodiert und das Paket enthÃ¤lt die neuen
 //!    SOM-Gewichte plus die komprimierten Indizes.
 //!
-//! Der effektive Schwellenwert ist **adaptiv** (relativ zum aktuellen
-//! Codebook): Ist `psnr_threshold_db` fÃ¼r das Material unerreichbar (die
-//! Baseline-PSNR, also die QualitÃ¤t, die das trainierte Codebook beim
-//! Keyframe liefert, liegt darunter), wird die Schwelle auf
-//! `baseline - psnr_relative_margin_db` abgesenkt. Nur bei echtem
-//! QualitÃ¤tsabfall gegenÃ¼ber dem Keyframe wird neu trainiert; ein
-//! `psnr_threshold_db == f64::INFINITY` erzwingt weiterhin jeden Frame als
-//! Keyframe.
+//! `psnr_threshold_db` ist eine absolute Mindest-PSNR. Liegt die QualitÃ¤t
+//! eines Folgeframes darunter, wird ein neues SOM trainiert. Ein
+//! `psnr_threshold_db == f64::INFINITY` erzwingt jeden Frame als Keyframe.
 //!
 //! Der Decoder arbeitet damit sequenziell: Er hÃ¤lt die zuletzt empfangene
 //! SOM, liest bei jedem Frame die Indizes, und Ã¼bernimmt bei Keyframes
@@ -60,21 +55,18 @@ const DEFAULT_PSNR_RELATIVE_MARGIN_DB: f64 = 2.5;
 /// Parameter des SOM-Video-Codecs.
 #[derive(Clone, Debug)]
 pub struct SomVideoConfig {
-    /// KantenlÃ¤nge der Quadrate-BlÃ¶cke in Pixeln (Standard: `4`).
+    /// KantenlÃ¤nge der Quadrate-Bloecke in Pixeln (Standard: `4`).
     pub block_size: usize,
     /// Gitterseite des SOM: `som_grid_size x som_grid_size` Neuronen
     /// (Standard: `16` -> 256 Codevektoren).
     pub som_grid_size: usize,
     /// Zielschwellenwert in dB, unterhalb derer ein Frame als Keyframe neu
-    /// trainiert wird (Standard: `28.0`). Ist der Wert fÃ¼r das Material
-    /// unerreichbar (Baseline-PSNR des aktuellen Codebooks darunter),
-    /// senkt sich die effektive Schwelle automatisch auf
-    /// `baseline - psnr_relative_margin_db` ab. `f64::INFINITY` erzwingt
-    /// jeden Frame als Keyframe.
+    /// trainiert wird (Standard: `28.0`). Der Wert wird absolut angewendet;
+    /// liegt ein Folgeframe darunter, wird ein neues SOM trainiert.
+    /// `f64::INFINITY` erzwingt jeden Frame als Keyframe.
     pub psnr_threshold_db: f64,
-    /// Toleranzband der relativen Keyframe-Erkennung in dB
-    /// (Standard: `2.5`): Keyframe bei PSNR-Abfall gegenÃ¼ber dem letzten
-    /// Keyframe um mehr als diesen Wert.
+    /// Frueher verwendetes Toleranzband der relativen Keyframe-Erkennung.
+    /// Wird aus API-Kompatibilitaet beibehalten, hat aber keine Wirkung mehr.
     pub psnr_relative_margin_db: f64,
     /// Anzahl der Kohonen-Epochen beim Training (Standard: `5`).
     pub train_epochs: usize,
@@ -289,25 +281,9 @@ fn psnr_from_indices(frame: &Frame, som: &SomMatrix, indices: &[u8], config: &Bl
     calculate_psnr(frame, &Frame::new(image, frame.index(), frame.timestamp()))
 }
 
-/// Effektiver Keyframe-Schwellenwert (Stufe 3, dynamisch/relativ):
-///
-/// * `psnr_threshold_db == +/- f64::INFINITY` ist ein Sentry: Die absolute
-///   Schwelle gilt unveraendert (unendlich -> jeder Frame wird Keyframe,
-///   minus unendlich -> nie).
-/// * Liegt die Baseline-PSNR (Qualitaet des aktuellen Codebooks beim
-///   Keyframe) **unter** der Zielschwelle, ist das Ziel fuer dieses Material
-///   unerreichbar; dann wird auf `baseline - margin` abgesenkt, sodass nur
-///   bei echtem Qualitaetsabfall neu trainiert wird.
-/// * Sonst gilt die Zielschwelle unveraendert.
-fn effective_threshold(absolute: f64, baseline: f64, margin: f64) -> f64 {
-    if absolute.is_infinite() {
-        return absolute;
-    }
-    if baseline < absolute {
-        baseline - margin
-    } else {
-        absolute
-    }
+/// Gibt den konfigurierten absoluten PSNR-Schwellenwert zurueck.
+fn effective_threshold(absolute: f64) -> f64 {
+    absolute
 }
 
 /// Flacht die Codebuch-Gewichte in ein zeilenmajores `f32`-Array ab
@@ -416,11 +392,7 @@ pub fn encode_video_stream_with_progress<F: FnMut(EncodeFrameProgress)>(
     let mut weights_flat: Vec<f32> = Vec::new();
 
     // Codebook-Zustand: existiert erst ab dem ersten Keyframe (Frame 0).
-    // `baseline_psnr` merkt sich die Qualitaet, die das aktuelle Codebook
-    // beim Trainieren des letzten Keyframes geliefert hat; sie ist die
-    // Grundlage der adaptiven Keyframe-Erkennung (Stufe 3).
     let mut som: Option<SomMatrix> = None;
-    let mut baseline_psnr = 0.0_f64;
 
     let mut frames_out: Vec<EncodedFrame> = Vec::with_capacity(frames.len());
     let mut keyframe_count = 0usize;
@@ -452,7 +424,6 @@ pub fn encode_video_stream_with_progress<F: FnMut(EncodeFrameProgress)>(
             weights_flat = flatten_weights(&trained);
             indices = quantize_blocks(&trained, &blocks, &weights_flat, gpu_quantizer.as_ref());
             frame_psnr = psnr_from_indices(frame, &trained, &indices, &block_config);
-            baseline_psnr = frame_psnr;
             som = Some(trained);
         } else {
             // Testweise Rekonstruktion mit der bisherigen SOM.
@@ -460,11 +431,7 @@ pub fn encode_video_stream_with_progress<F: FnMut(EncodeFrameProgress)>(
             indices = quantize_blocks(current, &blocks, &weights_flat, gpu_quantizer.as_ref());
             frame_psnr = psnr_from_indices(frame, current, &indices, &block_config);
 
-            let threshold = effective_threshold(
-                config.psnr_threshold_db,
-                baseline_psnr,
-                config.psnr_relative_margin_db,
-            );
+            let threshold = effective_threshold(config.psnr_threshold_db);
             if frame_psnr < threshold {
                 // Codebook passt nicht mehr: neues SOM trainieren, neu kodieren.
                 // Die Indizes muessen mit dem neuen Codebook neu berechnet
@@ -478,10 +445,8 @@ pub fn encode_video_stream_with_progress<F: FnMut(EncodeFrameProgress)>(
                     config.train_epochs,
                 );
                 weights_flat = flatten_weights(&trained);
-                indices =
-                    quantize_blocks(&trained, &blocks, &weights_flat, gpu_quantizer.as_ref());
+                indices = quantize_blocks(&trained, &blocks, &weights_flat, gpu_quantizer.as_ref());
                 frame_psnr = psnr_from_indices(frame, &trained, &indices, &block_config);
-                baseline_psnr = frame_psnr;
                 som = Some(trained);
             }
         }
@@ -759,11 +724,9 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_threshold_keeps_interframes_below_unreachable_absolute() {
-        // Mit dem starren absoluten Vergleich wuerde eine unerreichbar hohe
-        // Zielschwelle (1000 dB) jeden Frame zum Keyframe machen. Die adaptive
-        // Erkennung senkt die effektive Schwelle auf die Baseline des
-        // Keyframes (minus Margin): identische Folgeframes bleiben Interframes.
+    fn absolute_threshold_retrains_below_target() {
+        // Ein unerreichbarer Zielwert bleibt absolut und erzeugt daher
+        // fuer jeden nicht perfekten Folgeframe ein neues Keyframe.
         let frames = vec![make_frame(0, 0), make_frame(1, 0), make_frame(2, 0)];
         let config = SomVideoConfig {
             psnr_threshold_db: 1000.0,
@@ -771,16 +734,15 @@ mod tests {
         };
 
         let result = encode_video_stream(&frames, &config);
-        assert_eq!(result.stats.keyframe_count, 1);
-        assert!(result.frames[0].is_keyframe);
-        assert!(!result.frames[1].is_keyframe);
-        assert!(!result.frames[2].is_keyframe);
+        assert_eq!(result.stats.keyframe_count, 3);
+        assert!(result.frames.iter().all(|frame| frame.is_keyframe));
     }
 
     #[test]
-    fn adaptive_threshold_still_detects_content_changes() {
+    fn absolute_threshold_still_detects_content_changes() {
         // Grosser Inhaltswechsel: Die PSNR faellt weit unter
-        // `baseline - margin`, also entsteht weiterhin ein Keyframe.
+        // Auch bei einer niedrigen Zielschwelle wird ein starker Inhaltswechsel
+        // weiterhin erkannt.
         let frames = vec![make_frame(0, 0), make_frame(1, 120)];
         let result = encode_video_stream(&frames, &default_config());
 
@@ -789,15 +751,10 @@ mod tests {
     }
 
     #[test]
-    fn effective_threshold_follows_plan_examples() {
-        // Zielschwelle erreichbar -> absoluter Wert gilt.
-        assert_eq!(effective_threshold(28.0, 30.0, 2.5), 28.0);
-        // Ziel unerreichbar (Plan: 23.8 dB Baseline - 2.5 dB Margin = 21.3 dB).
-        let lowered = effective_threshold(28.0, 23.8, 2.5);
-        assert!((lowered - 21.3).abs() < 1e-9, "got {lowered}");
-        // INFINITY-Sentry: unveraendert -> jeder Frame wird Keyframe.
-        assert_eq!(effective_threshold(f64::INFINITY, 23.8, 2.5), f64::INFINITY);
-        assert_eq!(effective_threshold(20.0, 40.0, 2.5), 20.0);
+    fn effective_threshold_is_absolute() {
+        assert_eq!(effective_threshold(28.0), 28.0);
+        assert_eq!(effective_threshold(f64::INFINITY), f64::INFINITY);
+        assert_eq!(effective_threshold(20.0), 20.0);
     }
 
     #[test]
@@ -863,8 +820,8 @@ mod tests {
         assert_eq!(result.frames.len(), frames.len());
         assert!(result.frames[0].is_keyframe);
 
-        let decoded =
-            decode_video_stream(&result.frames, 16, 16, &config, 30.0).expect("decoding must succeed");
+        let decoded = decode_video_stream(&result.frames, 16, 16, &config, 30.0)
+            .expect("decoding must succeed");
         for (original, decoded_frame) in frames.iter().zip(decoded.iter()) {
             let psnr = calculate_psnr(original, decoded_frame);
             assert!(psnr > 20.0 || psnr == f64::INFINITY);
@@ -927,7 +884,8 @@ mod tests {
             |idx, total| {
                 decode_counts.push((idx, total));
             },
-        ).expect("decoding should succeed");
+        )
+        .expect("decoding should succeed");
         assert_eq!(decoded.len(), 2);
         assert_eq!(decode_counts, vec![(1, 2), (2, 2)]);
     }

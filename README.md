@@ -148,7 +148,7 @@ cargo run --release -- <INPUT> [OPTIONEN]
 | `--som` | `false` | Aktiviert das neuronale SOM-Kompressionsexperiment für Videos. |
 | `--som-block-size <INT>` | `4` | Kantenlänge quadratischer Kacheln (z. B. `4` für 4x4 oder `8` für 8x8 Pixel). |
 | `--som-grid <INT>` | `16` | Gittergröße des SOM (z. B. `16` für 16x16 = 256 Neuronen, oder `8` für 64 Neuronen). |
-| `--som-threshold <FLOAT>`| `28.0` | PSNR-Schwellenwert in dB. Unterschreitet ein Folgeframe diese Qualität, wird ein neuer Keyframe trainiert. Ist die Schwelle für das Material unerreichbar, senkt sie sich automatisch relativ zum letzten Keyframe ab (Toleranz 2.5 dB); `inf` erzwingt jeden Frame als Keyframe. |
+| `--som-threshold <FLOAT>`| `28.0` | Absolute PSNR-Mindestqualität in dB. Unterschreitet ein Folgeframe diesen Wert, wird ein neuer Keyframe trainiert; `inf` erzwingt jeden Frame als Keyframe. |
 | `--som-epochs <INT>` | `5` | Anzahl der Kohonen-Trainings-Epochen pro Keyframe (mit repräsentativem Subsampling: max. 10.000 Blöcke pro Training). |
 
 > [!NOTE]
@@ -171,7 +171,7 @@ cargo run --release -- <INPUT> [OPTIONEN]
 3. **Zeitliche Redundanz & Keyframe-Entscheidung (Inter-Frame):**  
    Frame 0 startet als Keyframe mit neu trainiertem Codebuch. Für jeden Folgeframe wird das bestehende Codebuch getestet:
    - Wird die Zielschwellenwert (z. B. `28.0 dB` PSNR) gehalten, wird das SOM beibehalten und nur der kompakte Index-Datenstrom übertragen.
-   - Liegt die Baseline-Qualität des trainierten Codebooks unter der Zielschwelle (typisch bei 4K-Material), senkt sich die effektive Schwelle automatisch auf `Baseline - 2.5 dB`: Keyframes entstehen nur noch bei echtem Qualitätsabfall (Szenenwechsel, starke Bewegung), nicht mehr bei jedem Frame.
+   - Die konfigurierte PSNR-Schwelle wird absolut angewendet: Unterschreitet ein Folgeframe den Wert, wird ein neues SOM als Keyframe trainiert.
    - Sinkt die Qualität dennoch unter die effektive Schwelle, wird ein neuer Keyframe getriggert, ein neues SOM trainiert und die Codebuch-Gewichte übertragen.
 
 4. **Kompression vs. Export-Video (Wichtige Unterscheidung):**

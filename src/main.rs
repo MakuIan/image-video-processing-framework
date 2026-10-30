@@ -380,10 +380,6 @@ fn run_som_video_pipeline(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         config.som_grid_size * config.som_grid_size
     );
     println!("  PSNR-Schwellenwert:  {:.1} dB", config.psnr_threshold_db);
-    println!(
-        "  Relativer Margin:    {:.1} dB (Keyframe bei PSNR-Abfall zum letzten Keyframe)",
-        config.psnr_relative_margin_db
-    );
     println!("  Kohonen-Epochen:     {}", config.train_epochs);
 
     println!("\nStep 1: Frames aus Video laden...");
