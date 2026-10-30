@@ -1,6 +1,6 @@
 ﻿# Image & Video Processing Framework
 
-Ein hochperformantes Framework zur Bild- und Videoverarbeitung in **Rust** mit modularer Streaming-Pipeline, CPU-Multithreading via [Rayon](https://crates.io/crates/rayon), GPU-Compute-Shader-Beschleunigung via [wgpu](https://crates.io/crates/wgpu) (Vulkan / DirectX 12 / Metal) und **SOM-basierter Videokompression** (Kohonen Self-Organizing Maps, Vektorquantisierung und Entropiekodierung).
+Ein Framework zur Bild- und Videoverarbeitung in **Rust** mit modularer Streaming-Pipeline, CPU-Multithreading via [Rayon](https://crates.io/crates/rayon), GPU-Compute-Shader-Beschleunigung via [wgpu](https://crates.io/crates/wgpu) (Vulkan / DirectX 12 / Metal) und **SOM-basierter Videokompression** (Kohonen Self-Organizing Maps, Vektorquantisierung und Entropiekodierung).
 
 ---
 
